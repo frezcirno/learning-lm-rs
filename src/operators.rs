@@ -1,4 +1,5 @@
 use crate::tensor::Tensor;
+use std::cmp::max;
 
 // get (row) vectors from a 2D table given a list of indices
 pub fn gather(y: &mut Tensor<f32>, indices: &Tensor<u32>, table: &Tensor<f32>) {
@@ -70,26 +71,91 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
     }
 }
 
+// Yi = w * x_i / sqrt{sum(x_ij^2) / n + epsilon}
+// X: (batch_size * n)
+// W: (n)
+// Y: (batch_size * n)
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    let size = y.size();
+    assert!(size == x.size());
+    assert!(w.size() == x.shape()[x.shape().len() - 1]);
+
+    let _y = unsafe { y.data_mut() };
+    let _x = x.data();
+    let _w = w.data();
+
+    let shape = x.shape();
+    let n = shape[shape.len() - 1];
+    let count = size / n;
+
+    for i in 0..count {
+        let mut sum = 0.0;
+        for j in 0..n {
+            let idx = i * n + j;
+            sum += _x[idx] * _x[idx];
+        }
+        sum = (sum / n as f32 + epsilon).sqrt();
+        for j in 0..n {
+            let idx = i * n + j;
+            _y[idx] = _x[idx] * _w[j] / sum;
+        }
+    }
 }
 
-// y = silu(x) * y
+// y = silu(x) * y = x * sigmoid(x) * y
 // hint: this is an element-wise operation
+//
 pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
-    // let len = y.size();
-    // assert!(len == x.size());
+    let len = y.size();
+    assert!(len == x.size());
 
-    // let _y = unsafe { y.data_mut() };
-    // let _x = x.data();
+    let _y = unsafe { y.data_mut() };
+    let _x = x.data();
 
-    todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    for i in 0..len {
+        _y[i] *= _x[i] / (1. + (-_x[i]).exp());
+    }
 }
 
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    // a: ...*m*n, b: ...*k*n, c: ...*m*k
+    let m = a_shape[a_shape.len() - 2];
+    let n = a_shape[a_shape.len() - 1];
+    let k = b_shape[b_shape.len() - 2];
+    let block_size1 = m * n;
+    let block_size2 = n * k;
+    let block_n1 = a.size() / block_size1;
+    let block_n2 = b.size() / block_size2;
+    let (block_repeat1, block_repeat2) = {
+        if block_n1 == block_n2 {
+            (1, 1)
+        } else if block_n1 > block_n2 {
+            (1, block_n1 / block_n2)
+        } else {
+            (block_n2 / block_n1, 1)
+        }
+    };
+    let _a = a.data();
+    let _b = b.data();
+    let _c = unsafe { c.data_mut() };
+    for step in 0..max(block_n1, block_n2) {
+        let a_offset = step / block_repeat1 * block_size1;
+        let b_offset = step / block_repeat2 * block_size2;
+        // matmul
+        for i in 0..m {
+            for j in 0..k {
+                let mut sum = 0.0;
+                for l in 0..n {
+                    sum += _a[a_offset + i * n + l] * _b[b_offset + j * n + l];
+                }
+                _c[i * k + j] = beta * _c[i * k + j] + alpha * sum;
+            }
+        }
+    }
 }
 
 // Dot product of two tensors (treated as vectors)
